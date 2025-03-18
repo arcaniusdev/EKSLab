@@ -1,0 +1,715 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploy a MongoDB instance.
+Parameters:
+  KeyName:
+    Description: EC2 KeyPair to enable SSH access to instances
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Can contain only ASCII characters.
+  PrimaryAZ:
+    Description: Availability Zone 1
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+    AllowedPattern: ".+"
+  SecondaryAZ:
+    Description: Availability Zone 2
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b
+    AllowedPattern: ".+"
+  DBBackupBucket:
+    Description: Name to use for backup bucket. Bucket name can include lowercase letters, numbers, and hyphens (-). Cannot start or end with a hyphen.
+    AllowedPattern: ^[0-9a-z]+([0-9a-z-\.]*[0-9a-z])*$
+    Type: String   
+  DBAdminPassword:
+    Description: Password for DB Admin
+    Type: String
+  DBUserPassword:
+    Description: Password for DB User
+    Type: String
+  AccessKey:
+    Description: Access key.  Provide access key for user running template
+    Type: String
+  SecretKey:
+    Description: Secret key.  Provide secret key for user running template
+    Type: String
+  DesiredCapacity:
+    Type: Number
+    Description: Desired number of worker nodes
+    Default: 2
+    MinValue: 1
+    MaxValue: 10         
+Mappings:
+  RegionMap:
+    us-east-1:
+      ami: ami-0e1bed4f06a3b463d
+    us-east-2:
+      ami: ami-0884d2865dbe9de4b
+    us-west-2:
+      ami: ami-0606dd43116f5ed57
+Resources:
+  BaseVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.2.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: !Sub BaseVPC${AWS::StackName}
+  PublicRT1:  
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+  PublicRT2:  
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+  PrivateRT1:  
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+  PrivateRT2:  
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+  IG:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub IG${AWS::StackName}
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      CidrBlock: 10.2.1.0/24
+      MapPublicIpOnLaunch: True
+      VpcId: !Ref BaseVPC
+      AvailabilityZone: !Ref PrimaryAZ
+      Tags:
+      - Key: kubernetes.io/role/elb
+        Value: 1
+      - Key: Name
+        Value: !Sub PublicSubnet1${AWS::StackName}
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      CidrBlock: 10.2.2.0/24
+      MapPublicIpOnLaunch: True
+      VpcId: !Ref BaseVPC
+      AvailabilityZone: !Ref SecondaryAZ
+      Tags:
+      - Key: kubernetes.io/role/elb
+        Value: 1      
+      - Key: Name
+        Value: !Sub PublicSubnet2${AWS::StackName}
+  PublicRT1:  
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+      Tags:
+      - Key: Name
+        Value: !Sub PublicRT1${AWS::StackName}
+  PublicRT2:
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref BaseVPC
+      Tags:
+      - Key: Name
+        Value: !Sub PublicRT2${AWS::StackName}
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      CidrBlock: 10.2.3.0/24
+      MapPublicIpOnLaunch: False
+      VpcId: !Ref BaseVPC
+      AvailabilityZone: !Ref PrimaryAZ
+      Tags:
+      - Key: kubernetes.io/role/internal-elb
+        Value: 1
+      - Key: Name
+        Value: !Sub PrivateSubnet1${AWS::StackName} 
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      CidrBlock: 10.2.4.0/24
+      MapPublicIpOnLaunch: False
+      VpcId: !Ref BaseVPC
+      AvailabilityZone: !Ref SecondaryAZ
+      Tags:
+      - Key: kubernetes.io/role/internal-elb
+        Value: 1
+      - Key: Name
+        Value: !Sub PrivateSubnet2${AWS::StackName}               
+  VPCIG:
+    DependsOn:
+    - BaseVPC    
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: 
+      InternetGatewayId: !Ref IG
+      VpcId: !Ref BaseVPC
+  PublicRoute1:
+    DependsOn:
+    - PublicRT1    
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRT1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IG
+  PublicRoute2:
+    DependsOn:
+    - PublicRT2    
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRT2
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IG
+  PrivateRoute1:
+    DependsOn:
+    - PrivateRT1    
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRT1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NGW1
+  PrivateRoute2:
+    DependsOn:
+    - PrivateRT2    
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRT2
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref NGW2      
+  PublicSubnetRT1:
+    DependsOn:
+    - PublicSubnet1    
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PublicRT1
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnetRT2:
+    DependsOn:
+    - PublicSubnet2    
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PublicRT2
+      SubnetId: !Ref PublicSubnet2
+  PrivateSubnetRT1:
+    DependsOn:
+    - PrivateSubnet1    
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PrivateRT1
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnetRT2:
+    DependsOn:
+    - PrivateSubnet2    
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PrivateRT2
+      SubnetId: !Ref PrivateSubnet2   
+  DBSecGroup:
+    DependsOn:
+    - BaseVPC    
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref BaseVPC
+      GroupDescription: Controls access to database.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 96.35.9.42/32
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 96.35.9.42/32
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.2.2.0/16
+        - IpProtocol: tcp
+          FromPort: '27017'
+          ToPort: '27017'
+          CidrIp: 10.2.2.0/24
+        - IpProtocol: tcp
+          FromPort: '27017'
+          ToPort: '27017'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '27017'
+          ToPort: '27017'
+          CidrIp: 10.2.4.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub DBSecGroup${AWS::StackName}
+  BastionSecGroup:
+    DependsOn:
+    - BaseVPC    
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref BaseVPC
+      GroupDescription: Controls access to Bastion host.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 96.35.9.42/32
+      Tags:
+      - Key: Name
+        Value: !Sub BastionSecGroup${AWS::StackName}            
+  EKSSecGroup:
+    DependsOn:
+    - BaseVPC
+    - BastionSecGroup    
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref BaseVPC
+      GroupDescription: Controls access to EKS Control Plane.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: '6443'
+          ToPort: '6443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '6443'
+          ToPort: '6443'
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 10.2.4.0/24                    
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 96.35.9.42/32
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref BastionSecGroup
+      Tags:
+      - Key: Name
+        Value: !Sub EKSSecGroup${AWS::StackName}
+  NodeSecGroup:
+    DependsOn:
+    - BaseVPC    
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref BaseVPC
+      GroupDescription: Controls access to EKS Nodes.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: '6443'
+          ToPort: '6443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '6443'
+          ToPort: '6443'
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 10.2.4.0/24                    
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 96.35.9.42/32
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.2.3.0/24
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.2.4.0/24
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref BastionSecGroup
+      Tags:
+      - Key: Name
+        Value: !Sub NodeSecGroup${AWS::StackName}
+  NGWEIP1:
+    Type: AWS::EC2::EIP
+    DependsOn:
+    - VPCIG
+    Properties:
+      Domain: !Ref BaseVPC
+      Tags:
+      - Key: Name
+        Value: !Sub NGWEIP1${AWS::StackName}          
+  NGW1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NGWEIP1.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+      - Key: Name
+        Value: !Sub NGW1${AWS::StackName}
+  NGWEIP2:
+    Type: AWS::EC2::EIP
+    DependsOn:
+    - VPCIG
+    Properties:
+      Domain: !Ref BaseVPC
+      Tags:
+      - Key: Name
+        Value: !Sub NGWEIP2${AWS::StackName}          
+  NGW2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NGWEIP2.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+      - Key: Name
+        Value: !Sub NGW2${AWS::StackName}         
+  MongoDB:
+    Type: AWS::EC2::Instance
+    DependsOn:
+    - BackupBucket
+    Properties:
+      IamInstanceProfile: !Ref DBInstanceProfile
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref AWS::Region
+        - ami
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet1
+          GroupSet:
+            - !Ref DBSecGroup
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref PrimaryAZ
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          export ec2_private_ip=$(curl http://169.254.169.254/latest/meta-data/local-ipv4)
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org
+          sudo systemctl start mongod
+          sudo systemctl enable mongod
+          sleep 10
+          sudo mongosh admin --eval 'db.createUser({user: "admin",pwd: "'${DBAdminPassword}'",roles: ["root"]})'
+          sudo mongosh admin --eval 'db.createUser({user: "tasky",pwd: "'${DBUserPassword}'",roles: ["readWriteAnyDatabase"]})'
+          sudo sed -i 's/#security:/security:\'$'\n  authorization: enabled/g' /etc/mongod.conf
+          sudo sed -i "s/127.0.0.1/127.0.0.1,$ec2_private_ip/g" /etc/mongod.conf
+          sudo systemctl restart mongod
+          sudo wget https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount-s3.deb
+          sudo apt-get install -y ./mount-s3.deb
+          sudo mkdir /etc/dbbackup
+          sudo mount-s3 ${DBBackupBucket} /etc/dbbackup --allow-overwrite
+          printf '0 * * * * root mongodump --out=/etc/dbbackup --username=admin --password=${DBAdminPassword}\n' > /etc/cron.d/dbbackup
+      Tags:
+      - Key: Name
+        Value: !Sub MongoDB${AWS::StackName}
+  DBRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              "AWS":
+                - "*"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "dbbackuppolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: dbbackup
+                Action:
+                  - '*'
+                Effect: Allow
+                Resource: '*'
+      Tags:
+      - Key: Name
+        Value: !Sub DBRole${AWS::StackName}
+  DBInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        -
+          Ref: "DBRole"
+  Bastion:
+    Type: AWS::EC2::Instance
+    DependsOn:
+    - EKSCluster
+    - NodeGroup
+    Properties:
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref AWS::Region
+        - ami
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet1
+          GroupSet:
+            - !Ref BastionSecGroup
+          AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Ref PrimaryAZ
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          sudo apt update
+          sudo apt-get remove needrestart -y
+          sudo apt install python3 python3-pip -y
+          sudo pip3 install awscli --upgrade
+          export PATH=~/.local/bin:$PATH
+          aws configure set aws_access_key_id ${AccessKey} 
+          aws configure set aws_secret_access_key ${SecretKey} 
+          aws configure set region ${AWS::Region}
+          sudo curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+          sudo apt-get install apt-transport-https --yes
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+          sudo apt-get update
+          sudo apt-get install helm
+          ARCH=amd64
+          PLATFORM=$(uname -s)_$ARCH
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+          tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
+          sudo mv /tmp/eksctl /usr/local/bin
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          aws eks update-kubeconfig --region ${AWS::Region} --name ${EKSCluster}
+          kubectl config set-cluster ${EKSCluster} --server=${EKSCluster.Endpoint} --insecure-skip-tls-verify
+          sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg 
+          sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          aws eks create-addon --cluster-name EKSCluster --addon-name eks-pod-identity-agent --addon-version v1.0.0-eksbuild.1
+          sudo helm repo add eks https://aws.github.io/eks-charts
+          sudo helm repo update eks
+          sudo helm install aws-load-balancer-controller eks/aws-load-balancer-controller -n kube-system --set clusterName=EKSCluster
+      Tags:
+      - Key: Name
+        Value: !Sub Bastion${AWS::StackName}
+  BastionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              "AWS":
+                - "*"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "BastionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Bastion
+                Action:
+                  - '*'
+                Effect: Allow
+                Resource: '*'
+      Tags:
+      - Key: Name
+        Value: !Sub BastionRole${AWS::StackName}
+  BastionInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        -
+          Ref: "BastionRole"  
+  BackupBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref DBBackupBucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+      - Key: Name
+        Value: !Sub BackupBucket${AWS::StackName}
+  BackupBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket:
+        !Ref 'BackupBucket'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource:
+              Fn::Join:
+                - ''
+                - - 'arn:aws:s3:::'
+                  - Ref: 'BackupBucket'
+                  - '/*'
+  EKSCluster:
+    DependsOn:
+    - EKSClusterRole
+    - EKSSecGroup
+    - NGW1
+    - NGW2
+    - PrivateRoute1
+    - PrivateRoute2  
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: EKSCluster
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref EKSSecGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Tags:
+      - Key: Name
+        Value: !Sub EKSCluster${AWS::StackName}
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub EKSClusterRole${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+      - Key: Name
+        Value: !Sub EKSClusterRole${AWS::StackName}
+  EKSLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData: 
+        MetadataOptions:
+          HttpPutResponseHopLimit: 2
+      LaunchTemplateName: EKSLaunchTemplate
+  NodeGroup:
+    DependsOn:
+    - EKSCluster
+    - NodeInstanceRole
+    - EKSLaunchTemplate  
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      LaunchTemplate:
+        Id: !Ref EKSLaunchTemplate
+        Version: !GetAtt EKSLaunchTemplate.LatestVersionNumber
+      NodeRole: !GetAtt NodeInstanceRole.Arn
+      Subnets: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      ScalingConfig:
+        DesiredSize: !Ref DesiredCapacity
+        MinSize: 1
+        MaxSize: 10
+      InstanceTypes:
+        - t2.medium 
+  NodeInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub EKSNodeInstanceRole${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+      - Key: Name
+        Value: !Sub NodeInstanceRole${AWS::StackName}
+  CNIAddOn:
+    DependsOn:
+    - EKSCluster
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: vpc-cni
+      ClusterName: EKSCluster
+      Tags:
+      - Key: Name
+        Value: !Sub lbcpolicy${AWS::StackName}
+Outputs:
+  DBURL:
+    Description: URL for newly created MongoDB
+    Value: !Join
+      - ''
+      - - https://
+        - !GetAtt MongoDB.PublicDnsName
